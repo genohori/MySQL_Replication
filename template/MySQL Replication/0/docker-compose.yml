@@ -1,0 +1,91 @@
+version: '2'
+services:
+  MySQLMasterLoadBalancer:
+    image: rancher/lb-service-haproxy:v0.7.15
+    ports:
+    - 3306:3306/tcp
+    labels:
+      io.rancher.container.agent.role: environmentAdmin,agent
+      io.rancher.container.agent_service.drain_provider: 'true'
+      io.rancher.container.create_agent: 'true'
+      io.rancher.scheduler.global: 'true'
+  MySQLMasterSidekick:
+    image: mysql:5.7
+    stdin_open: true
+    tty: true
+    command:
+    - /bin/bash
+    - -c
+    - while :; do sleep 10; if [ `mysqladmin -h MySQLMaster -u root -proot | grep alive | wc -l` -eq 1 ]; then echo "alive"; mysql -u root -proot -h MySQLMaster -e "CREATE USER 'repl'@'%' IDENTIFIED BY 'repl'; GRANT REPLICATION SLAVE ON *.* TO 'repl'@'%';"; break; fi done
+    labels:
+      io.rancher.container.pull_image: always
+      io.rancher.container.start_once: 'true'
+  MySQLSlaveLoadBalancer:
+    image: rancher/lb-service-haproxy:v0.7.15
+    ports:
+    - 3307:3307/tcp
+    labels:
+      io.rancher.container.agent.role: environmentAdmin,agent
+      io.rancher.container.agent_service.drain_provider: 'true'
+      io.rancher.container.create_agent: 'true'
+      io.rancher.scheduler.global: 'true'
+  MySQLSLave:
+    image: mysql:5.7
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+    stdin_open: true
+    tty: true
+    command:
+    - mysqld
+    - --port=3306
+    - --server-id=102
+    - --character-set-server=utf8mb4
+    - --datadir=/var/lib/mysql
+    - --log-error=/var/log/mysql/error.log
+    - --slow-query-log
+    - --slow-query-log-file=/var/log/mysql/slow_query_log.log
+    - --long-query-time=5
+    - --log-bin
+    - --max-connections=4096
+    - --gtid-mode=on
+    - --enforce-gtid-consistency=on
+    labels:
+      io.rancher.scheduler.affinity:container_label_soft_ne: io.rancher.stack_service.name=mysqlreplication/mysqlmaster
+      io.rancher.sidekicks: MySQLSlaveSidekick
+      io.rancher.container.hostname_override: container_name
+      io.rancher.container.pull_image: always
+  MySQLSlaveSidekick:
+    image: mysql:5.7
+    stdin_open: true
+    tty: true
+    command:
+    - /bin/bash
+    - -c
+    - while :; do sleep 10; if [ `mysqladmin -h MySQLMaster -u root -proot | grep alive | wc -l` -eq 1 ]; then echo "master alive"; if [ `mysqladmin -h MySQLSlave -u root -proot | grep alive | wc -l` -eq 1 ]; then echo "slave also alive"; mysql -u root -proot -h MySQLSlave -e "CHANGE MASTER TO MASTER_HOST='MySQLMaster', MASTER_USER='repl', MASTER_PASSWORD='repl', MASTER_AUTO_POSITION=1; START SLAVE;"; sleep 10; mysql -u root -proot -h MySQLSlave -e "show slave status\G";break; fi fi done
+    labels:
+      io.rancher.container.pull_image: always
+      io.rancher.container.start_once: 'true'
+  MySQLMaster:
+    image: mysql:5.7
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+    stdin_open: true
+    tty: true
+    command:
+    - mysqld
+    - --port=3306
+    - --server-id=101
+    - --character-set-server=utf8mb4
+    - --datadir=/var/lib/mysql
+    - --log-error=/var/log/mysql/error.log
+    - --slow-query-log
+    - --slow-query-log-file=/var/log/mysql/slow_query_log.log
+    - --long-query-time=5
+    - --log-bin
+    - --max-connections=4096
+    - --gtid-mode=on
+    - --enforce-gtid-consistency=on
+    labels:
+      io.rancher.container.pull_image: always
+      io.rancher.sidekicks: MySQLMasterSidekick
+      io.rancher.container.hostname_override: container_name
